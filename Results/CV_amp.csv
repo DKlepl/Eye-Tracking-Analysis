@@ -1,0 +1,5 @@
+"","median_rmse_train","median_rmse_test","range_train","range_test","V5"
+"1",0.948,0.948,0.116,0.116,"SearchType + Trial + (1 + SearchType | ParticipantID)"
+"2",0.945,0.945,0.116,0.116,"SearchType * Trial + (1 + SearchType | ParticipantID)"
+"3",0.949,0.949,0.116,0.116,"SearchType + (1 + SearchType | ParticipantID)"
+"4",0.955,0.955,0.116,0.116,"SearchType + (1 | ParticipantID)"

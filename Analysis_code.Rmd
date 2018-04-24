@@ -1,0 +1,548 @@
+---
+title: "EyeTracking Data Preprocessing and Analysis"
+author: "Dominik Klepl"
+date: "5 2 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+setwd("~/Google Drive/4th Semester/Computational Modelling for CogSci/2018 - Eye tracking")
+pacman::p_load(readr,groupdata2,ggplot2,tidyverse,magrittr,lmerTest,caret)
+```
+
+
+```{r load data}
+Fixations=read_csv('FixationsV1.csv')
+Saccades=read_csv('SaccadesV1.csv')
+Samples=read_csv('SamplesV1.csv')
+
+logfile_1_2_f= read.csv("PupilsLogs/logfile_1_2_f.csv")
+
+#load pupil logs
+pup_logs = list.files(path="PupilsLogs",full.names = T)
+```
+
+
+
+```{r merge logs with data}
+#extract info from "video" column and save that into separate columns
+unlist_video = function(data) {
+  for (i in seq(nrow(data))) {
+    x = str_split(data$video[i],"_")[[1]]
+    data$ActorGender[i] = x[1]
+    data$Directionality[i] = x[4]
+    data$Ostension[i] = x[5]
+  }
+  return(data)
+}
+
+#loop through all log files
+all_pup_logs = {}
+for (f in pup_logs) {
+  fil = read.csv(f)
+  fil = fil %>% rename(Trial=X,ParticipantID=subject)
+  fil$Trial = fil$Trial+1
+  done_d = unlist_video(fil)
+  all_pup_logs = rbind(all_pup_logs,done_d)
+}
+
+Samples = merge(Samples,all_pup_logs,by=c("Trial","ParticipantID"),all=T)
+Saccades = merge(Saccades,all_pup_logs,by=c("Trial","ParticipantID"),all=T)
+Fixations = merge(Fixations,all_pup_logs,by=c("Trial","ParticipantID"),all=T)
+```
+
+```{r give searchType}
+Samples$SearchType = NA
+
+Samples$SearchType[Samples$SearchOrder==1 & Samples$Trial<6] = "Count"
+Samples$SearchType[Samples$SearchOrder==1 & Samples$Trial>=6] = "Search" 
+
+Samples$SearchType[Samples$SearchOrder==2 & Samples$Trial>=6] = "Count"
+Samples$SearchType[Samples$SearchOrder==2 & Samples$Trial<6] = "Search"
+
+Saccades$SearchType = NA
+
+Saccades$SearchType[Saccades$SearchOrder==1 & Saccades$Trial<6] = "Count"
+Saccades$SearchType[Saccades$SearchOrder==1 & Saccades$Trial>=6] = "Search" 
+
+Saccades$SearchType[Saccades$SearchOrder==2 & Saccades$Trial>=6] = "Count"
+Saccades$SearchType[Saccades$SearchOrder==2 & Saccades$Trial<6] = "Search"
+
+Fixations$SearchType = NA
+
+Fixations$SearchType[Fixations$SearchOrder==1 & Fixations$Trial<6] = "Count"
+Fixations$SearchType[Fixations$SearchOrder==1 & Fixations$Trial>=6] = "Search" 
+
+Fixations$SearchType[Fixations$SearchOrder==2 & Fixations$Trial>=6] = "Count"
+Fixations$SearchType[Fixations$SearchOrder==2 & Fixations$Trial<6] = "Search"
+
+Order1<- read_tsv('ForagingOrder1.txt',col_names = F)
+Order1$Trial=1:10
+Order1$SearchOrder=1
+Order2<- read_tsv('ForagingOrder2.txt',col_names = F)
+Order2$Trial=1:10
+Order2$SearchOrder=2
+
+Order=rbind(Order1,Order2)
+Order=Order %>% rename(Stimulus=X1)
+
+
+Samples = merge(Samples,Order,by=c("Trial","SearchOrder"),all=T)
+Saccades = merge(Saccades,Order,by=c("Trial","SearchOrder"),all=T)
+Fixations = merge(Fixations,Order,by=c("Trial","SearchOrder"),all=T)
+
+```
+
+```{r save my datafiles}
+#V2D
+write_csv(Samples,"SamplesV2.csv")
+write_csv(Saccades,"SaccadesV2.csv")
+write_csv(Fixations,"FixationsV2.csv")
+```
+
+```{r load data again}
+Fixations=read_csv('FixationsV2.csv')
+Saccades=read_csv('SaccadesV2.csv')
+Samples=read_csv('SamplesV2.csv')
+
+#and get the clean Yposition
+Fixations$PositionYClean=1081-Fixations$PositionY
+```
+
+
+#Data Analysis: Visual Foraging
+```{r}
+
+#make subsets of data - only one experiment
+Fixations_vis = Fixations %>% 
+  subset(Task== "VisualSearch")
+
+Saccades_vis = Saccades %>% 
+  subset(Task== "VisualSearch")
+```
+
+```{r data distribution}
+#duration of fixation
+ggplot(Fixations_vis, aes(Duration)) + 
+  geom_density()+ #log normal
+  ggtitle("Distribution of Duration of Fixations")
+
+#log transform Duration to make the distrbution normal-ish
+Fixations_vis$Duration_log = log(Fixations_vis$Duration)
+
+ggplot(Fixations_vis, aes(Duration_log)) + 
+  geom_density() #kinda normal
+
+#saccades amplitude
+ggplot(Saccades_vis, aes(Amplitude)) + 
+  geom_density()+ #exponential
+  ggtitle("Distribution of Amplitude of Saccades")
+
+#log transform Amplitude to make the distrbution normal-ish
+Saccades_vis$Amplitude_log = log(Saccades_vis$Amplitude)
+
+ggplot(Saccades_vis ,aes(Amplitude_log)) + 
+  geom_density() #n
+
+```
+
+
+```{r models}
+duration_normal = lmer(Duration_log ~ SearchType + Trial + (1 + SearchType|ParticipantID) ,data= Fixations_vis)
+
+duration_inter= lmer(Duration_log ~ SearchType * Trial + (1 + SearchType|ParticipantID),data= Fixations_vis)
+
+duration_simple= lmer(Duration_log ~ SearchType + (1 + SearchType|ParticipantID),data= Fixations_vis)
+
+duration_simpler= lmer(Duration_log ~ SearchType + (1|ParticipantID), data= Fixations_vis)
+
+#list of duration models to lapply with crossvalidation function
+duration_models = list(duration_normal,duration_inter,duration_simple,duration_simpler)
+
+
+
+amplitude_normal = lmer(Amplitude_log ~ SearchType + Trial + (1 + SearchType|ParticipantID) ,data= Saccades_vis,control=lmerControl(calc.derivs = F))
+
+amplitude_inter= lmer(Amplitude_log ~ SearchType * Trial + (1 + SearchType|ParticipantID),data= Saccades_vis,control=lmerControl(calc.derivs = F))
+
+amplitude_simple= lmer(Amplitude_log ~ SearchType + (1 + SearchType|ParticipantID),data= Saccades_vis,control=lmerControl(calc.derivs = F))
+
+amplitude_simpler= lmer(Amplitude_log ~ SearchType + (1|ParticipantID), data= Saccades_vis,control=lmerControl(calc.derivs = F))
+
+amplitude_models = list(amplitude_normal,amplitude_inter,amplitude_simple,amplitude_simpler)
+```
+
+```{r CV function}
+library(caret)
+
+Fixations_vis$ID=as.numeric(as.factor(as.character((Fixations_vis$ParticipantID))))
+Saccades_vis$ID=as.numeric(as.factor(as.character((Saccades_vis$ParticipantID))))
+                            
+#building function for cross validation for fixations
+crossvalidation_fix  = function (model) {
+  `%not in%` <- function (x, table) is.na(match(x, table, nomatch=NA_integer_))
+  Folds = createFolds(unique(Fixations_vis$ID),3)
+  result={}
+  for (i in Folds) {
+    #subset of Fixations_visa except for the 1 fold
+    train_d = subset(Fixations_vis, ID %not in% i)
+    train_d=subset(train_d,!is.na(train_d$Duration))
+    #subset including only 1 fold
+    test_d = subset(Fixations_vis, ID %in% i)
+    test_d=subset(test_d,!is.na(test_d$Duration))
+    #fit train subset into specified model
+    model_val = update(model,data=train_d)
+    #rmse of train data
+    pred1 = predict(model_val, train_d,allow.new.levels=T)
+    rmse_train=Metrics::rmse(train_d$Duration_log[!is.na(pred1)],pred1[!is.na(pred1)])
+    
+    #rmse of test data
+    pred2 = predict(model_val, test_d,allow.new.levels=T)
+    rmse_test=Metrics::rmse(test_d$Duration_log[!is.na(pred2)],pred2[!is.na(pred2)])
+    
+    res = cbind(rmse_train,rmse_test)
+    result=rbind(result,res)
+    
+  }
+  
+  final_res=data.frame(mean_train=mean(result[1]),mean_test=mean(result[2]))
+  return(final_res)
+}
+
+#building function for cross validation for fixations - problem is when ID 4 or 5 is in fold
+crossvalidation_sac  = function (model) {
+  `%not in%` <- function (x, table) is.na(match(x, table, nomatch=NA_integer_))
+  Folds = createFolds(unique(Saccades_vis$ID),3)
+  result={}
+  
+  for (i in Folds) {
+    #subset of Saccades_visa except for the 1 fold
+    train_d = subset(Saccades_vis, ID %not in% i)
+    train_d=subset(train_d,!is.na(train_d$Amplitude))
+    #subset including only 1 fold
+    test_d = subset(Saccades_vis, ID %in% i)
+    test_d=subset(test_d,!is.na(test_d$Amplitude))
+    #fit train subset into specified model
+    model_val = update(model,data=train_d)
+    #rmse of train data
+    train_d$pred = as.numeric(predict(model_val, train_d,allow.new.levels=T))
+    rmse_train=Metrics::rmse(train_d$Amplitude_log[!is.na(train_d$pred)],train_d$pred[!is.na(train_d$pred)])
+    
+    #rmse of test data
+    test_d$pred = as.numeric(predict(model_val, test_d,allow.new.levels=T))
+    rmse_test=Metrics::rmse(test_d$Amplitude_log[!is.na(test_d$pred)],test_d$pred[!is.na(test_d$pred)])
+    
+    res = cbind(rmse_train,rmse_test)
+    result=rbind(result,res)
+    
+  }
+  final_res=data.frame(mean_train=mean(result[1]),mean_test=mean(result[2]))
+  return(final_res)
+}
+```
+
+```{r model selection}
+#for duration
+final_result_dur = data.frame(median_rmse_train = numeric(), 
+                          median_rmse_test = numeric(),
+                          range_train = numeric(),
+                          range_test = numeric())
+
+
+
+
+#do a repeated 3-fold CV => doesn't require much, with 6 participants divided into 3 folds there are only 15 combinations /3-fold => approx. 5 outcomes - do more
+for (m in duration_models) {
+  allCV = data.frame()
+  r=0
+  while (r<1e4) {
+    oneCV = try(crossvalidation_fix(m))
+    allCV=rbind(allCV,oneCV)
+    print(r)
+    r=r+1
+  }
+  formula=as.character(m@call[[2]])
+  
+  final_result_dur[nrow(final_result_dur)+1,1]=median(allCV[,1])
+  final_result_dur[nrow(final_result_dur),2]=median(allCV[,2])
+  final_result_dur[nrow(final_result_dur),3]=max(allCV[,1])-min(allCV[,1])
+  final_result_dur[nrow(final_result_dur),4]=max(allCV[,2])-min(allCV[,2])
+  final_result_dur[nrow(final_result_dur),5]=formula[3]
+}
+
+
+#SearchType * Trial + (1 + SearchType | ParticipantID) is the best model
+best_duration = lmer(Duration_log ~SearchType * Trial + (1 + SearchType | ParticipantID), data=Fixations_vis)
+
+#look at summary of the model
+summary(best_duration)
+
+#for amplitude
+final_result_amp = data.frame(median_rmse_train = numeric(), 
+                          median_rmse_test = numeric(),
+                          range_train = numeric(),
+                          range_test = numeric())
+
+for (m in amplitude_models) {
+  allCV = data.frame()
+  r=0
+  while (r<1e4) {
+    oneCV = try(crossvalidation_sac(m))
+    allCV=rbind(allCV,oneCV)
+    print(r)
+    r=r+1
+  }
+  formula=as.character(m@call[[2]])
+  
+  final_result_amp[nrow(final_result_amp)+1,1]=median(allCV[,1])
+  final_result_amp[nrow(final_result_amp),2]=median(allCV[,2])
+  final_result_amp[nrow(final_result_amp),3]=max(allCV[,1])-min(allCV[,1])
+  final_result_amp[nrow(final_result_amp),4]=max(allCV[,2])-min(allCV[,2])
+  final_result_amp[nrow(final_result_amp),5]=formula[3]
+}
+
+#SearchType + Trial + (1 + SearchType | ParticipantID)
+best_amplitude = lmer(Amplitude_log ~ SearchType * Trial + (1 + SearchType | ParticipantID),data=Saccades_vis)
+
+#and summary
+summary(best_amplitude) #significant 2.142 for search
+
+#save the results for reporting
+final_result_dur[,1:4]=round(final_result_dur[,1:4],3)
+final_result_amp[,1:4]=round(final_result_amp[,1:4],3)
+
+write.csv(final_result_dur,"CV_duration.csv")
+write.csv(final_result_amp,"CV_amp.csv")
+```
+
+
+```{r visualization}
+#heat map
+jet.colors <- colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan", "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
+library(jpeg)
+library(grid)
+
+sheeps <- readJPEG('eyetrackingscripts/Foraging/ng021ws.jpg')
+sheeps_g <- rasterGrob(sheeps, interpolate=TRUE)
+
+#density
+ggplot(subset(Fixations, Task=='VisualSearch' & Stimulus=="ng021ws.jpg"), aes(x = PositionX, y = PositionYClean)) +
+  xlim(0,1920) +
+  ylim(0, 1080) +
+  annotation_custom(sheeps_g, xmin=-Inf, xmax=Inf, ymin=0, ymax=1080) + #xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+  stat_density2d(geom="raster", aes(fill=..density.., alpha=sqrt(sqrt(..density..))), contour=FALSE, n=1000) + 
+  scale_alpha(range = c(0.1, 0.6)) + scale_fill_gradientn(colours = jet.colors(10), trans="sqrt")
+
+#Scanpath
+#counting sheeps
+x1=subset(Fixations_vis, ParticipantID=='6_3_m2' & Stimulus=="ng021ws.jpg")
+x1= x1[order(x1$Fixation),]
+
+scanpath_count=ggplot(x1, aes(x=PositionX, y=PositionYClean, label=Fixation)) +
+  annotation_custom(sheeps_g, xmin=-Inf, xmax=Inf, ymin=-0, ymax=1080) + #xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+  geom_point(size = x1$Duration[x1$Stimulus=="ng021ws.jpg"]/100, alpha = .5, color='red') +
+  geom_path(size = 1, alpha = 0.3,color='red') +
+  geom_text(aes(label = Fixation, size = 5))
+
+scanpath_count
+
+ggsave("Figures/scanpath_count.jpg",scanpath_count, device = "jpg")
+
+#searching in landscape
+star <- readJPEG('eyetrackingscripts/Foraging/ng120ws.jpg')
+star_g <- rasterGrob(star, interpolate=TRUE)
+
+x2=subset(Fixations_vis, ParticipantID=='6_3_m2' & Stimulus=="ng120ws.jpg")
+x2= x2[order(x2$Fixation),]
+
+scanpath_star=ggplot(x2, aes(x=PositionX, y=PositionYClean, label=Fixation)) +
+  annotation_custom(star_g, xmin=-Inf, xmax=Inf, ymin=-0, ymax=1080) + #xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+  geom_point(size = x2$Duration[x2$Stimulus=="ng120ws.jpg"]/100, alpha = .5, color='red') +
+  geom_path(size = 1, alpha = 0.3,color='red') +
+  geom_text(aes(label = Fixation, size = 5))
+
+scanpath_star
+
+ggsave("Figures/scanpath_star.jpg",scanpath_star, device = "jpg")
+```
+
+```{r visualization of models results}
+#plot the interactions
+
+#seems to contradict the hypothesis
+fix_plot=ggplot(Fixations_vis,aes(SearchType,Duration,fill=SearchType))+
+  geom_col(position = "dodge")+
+  facet_grid(~Trial)
+
+sac_plot=ggplot(Saccades_vis,aes(SearchType,Amplitude,fill=SearchType))+
+  geom_col(position = "dodge")+
+  facet_grid(~Trial)
+
+ggsave("Figures/fix_plot.jpg",fix_plot)
+ggsave("Figures/sac_plot.jpg",sac_plot)
+```
+
+
+#Social Engagement Exp
+
+```{r}
+Samples_soc = Samples %>% subset(Task== "SocialEngagement") %>% subset(!is.na(PupilSize))
+
+Fixations_soc = Fixations %>% subset(Task== "SocialEngagement") %>% subset(!is.na(PupilSize))
+
+
+Samples_soc$TrialTime_scaled = scale(Samples_soc$TrialTime)
+Fixations_soc$StartTime_scaled = scale(Fixations_soc$StartTime)
+```
+
+```{r data distribution}
+hist(Samples_soc$PupilSize)
+
+ggplot(Samples_soc,aes(PupilSize))+
+  geom_density() # Not really!
+
+ggplot(Samples_soc,aes(PupilSize,color=ParticipantID))+
+  geom_density() # lmer should handle it
+
+```
+
+```{r models}
+pup_1 = lmer(PupilSize ~ Directionality+Ostension + TrialTime_scaled+ (1+TrialTime_scaled+Directionality+Ostension|ParticipantID),data=Samples_soc,control=lmerControl(calc.derivs = F))
+
+
+pup_2 =  lmer(PupilSize ~ Directionality*Ostension+ActorGender*ParticipantGender + TrialTime_scaled+ (1+TrialTime_scaled+Directionality+Ostension|ParticipantID),data=Samples_soc,control=lmerControl(calc.derivs = F))
+
+pup_3= lmer(
+  PupilSize ~ Directionality * Ostension * TrialTime_scaled + ActorGender * ParticipantGender * TrialTime_scaled 
+  +(1 + TrialTime_scaled + Directionality + Ostension |ParticipantID),
+  data = Samples_soc,control=lmerControl(calc.derivs = F))
+
+pup_4 = lmer(
+  PupilSize ~ Directionality * Ostension * (TrialTime_scaled+I(TrialTime_scaled^2)) + ActorGender * ParticipantGender * (TrialTime_scaled+I(TrialTime_scaled^2))
+  +(1 + TrialTime_scaled + Directionality + Ostension |ParticipantID),
+  data = Samples_soc,control=lmerControl(calc.derivs = F)
+  )
+
+pup_5 = lmer(
+  PupilSize ~ Directionality * Ostension * (TrialTime_scaled+I(TrialTime_scaled^2)+I(TrialTime_scaled^3)) + ActorGender * ParticipantGender * (TrialTime_scaled+I(TrialTime_scaled^2)+I(TrialTime_scaled^3))
+  +(1 + TrialTime_scaled + Directionality + Ostension |ParticipantID),
+  data = Samples_soc,control=lmerControl(calc.derivs = F)
+  )
+```
+
+```{r CV for PupilSize}
+Samples_soc$ID=as.numeric(as.factor(as.character((Samples_soc$ParticipantID))))
+                            
+crossvalidation_pup  = function (model) {
+  `%not in%` <- function (x, table) is.na(match(x, table, nomatch=NA_integer_))
+  Folds = caret::createFolds(unique(Samples_soc$ID),3)
+  result={}
+  for (i in Folds) {
+    #subset of Samples_soc except for the 1 fold
+    train_d = subset(Samples_soc, ID %not in% i)
+    train_d=subset(train_d,!is.na(train_d$PupilSize))
+    #subset including only 1 fold
+    test_d = subset(Samples_soc, ID %in% i)
+    test_d=subset(test_d,!is.na(test_d$PupilSize))
+    #fit train subset into specified model
+    model_val = update(model,data=train_d)
+    #rmse of train data
+    train_d$pred = as.numeric(predict(model_val, train_d,allow.new.levels=T))
+    rmse_train=Metrics::rmse(train_d$PupilSize[!is.na(train_d$pred)],train_d$pred[!is.na(train_d$pred)])
+    
+    #rmse of test data
+    test_d$pred = as.numeric(predict(model_val, test_d,allow.new.levels=T))
+    rmse_test=Metrics::rmse(test_d$PupilSize[!is.na(test_d$pred)],test_d$pred[!is.na(test_d$pred)])
+    
+    res = cbind(rmse_train,rmse_test)
+    result=rbind(result,res)
+    
+  }
+  
+  final_res=data.frame(mean_train=mean(result[1]),mean_test=mean(result[2]))
+  return(final_res)
+}
+```
+
+```{r model selection}
+pup_models=list(pup_1,pup_2,pup_3,pup_4,pup_5)
+
+
+final_result_pup = data.frame(mean_rmse_train = numeric(), 
+                          mean_rmse_test = numeric(),
+                          range_train = numeric(),
+                          range_test = numeric())
+
+n_errors=0
+for (m in pup_models) {
+  allCV = data.frame()
+  r=0
+  while (r<500) {
+    oneCV = try(crossvalidation_pup(m),silent = T)
+    if (class(oneCV)=="try-error") {
+      print("Did not converge, sorry master.")
+      n_errors=n_errors+1
+    }
+    else {
+      allCV=rbind(allCV,oneCV)
+    }
+    print(r)
+    r=r+1
+  }
+  formula=as.character(m@call[[2]])
+  
+  final_result_pup[nrow(final_result_pup)+1,1]=median(allCV[,1],na.rm=T)
+  final_result_pup[nrow(final_result_pup),2]=median(allCV[,2],na.rm=T)
+  final_result_pup[nrow(final_result_pup),3]=max(allCV[,1],na.rm=T)-min(allCV[,1],na.rm=T)
+  final_result_pup[nrow(final_result_pup),4]=max(allCV[,2],na.rm=T)-min(allCV[,2],na.rm=T)
+  final_result_pup[nrow(final_result_pup),5]=formula[3]
+}
+print(n_errors)
+
+#resolve the conflict between models by adding their range
+final_result_pup$mean_range_test = final_result_pup$mean_rmse_test + final_result_pup$range_test
+
+#best is Directionality * Ostension * (StartTime_scaled+StartTime_scaled^2) + ActorGender * ParticipantGender * (StartTime_scaled+StartTime_scaled^2)
+best_pup =lmer(
+  PupilSize ~ Directionality * Ostension * (TrialTime_scaled+I(TrialTime_scaled^2)) + ActorGender * ParticipantGender * (TrialTime_scaled+I(TrialTime_scaled^2))
+  +(1 + TrialTime_scaled + Directionality + Ostension |ParticipantID),
+  data = Samples_soc,control=lmerControl(calc.derivs = F))
+best_pup =lmer(
+  PupilSize ~ Directionality * Ostension * (StartTime_scaled+I(StartTime_scaled^2)) + ActorGender * ParticipantGender * (StartTime_scaled+I(StartTime_scaled^2))
+  +(1 + StartTime_scaled + Directionality + Ostension |ParticipantID),
+  data = Fixations_soc,control=lmerControl(calc.derivs = F))
+
+sum_pup=summary(best_pup)
+
+#save the model summary
+output_pup=sum_pup$coefficients
+write.csv(output_pup,"Best_pupil_model.csv",row.names = F)
+
+#save the CV results for reporting
+final_result_pup[,-5]=round(final_result_pup[,-5],3)
+
+
+write.csv(final_result_pup,"CV_pup.csv",row.names = F)
+```
+
+
+```{r visualization}
+#Directionalitydiv:Ostension+o:StartTime
+Dir_Ost_Time_plot=ggplot(Samples_soc,
+       aes(TrialTime, PupilSize, colour=Directionality), na.rm=F) +
+       geom_smooth() +
+       xlim(0,5371)+
+       facet_grid(.~Ostension)
+
+#StartTime:ActorGenderm:ParticipantGendermale
+Act_Part_Time_plot=ggplot(Samples_soc,
+       aes(TrialTime, PupilSize, colour=ParticipantGender), na.rm=F) +
+       geom_smooth() +
+       xlim(0,5371)+
+       facet_grid(.~ActorGender)
+
+#save the plots
+ggsave("Figures/Dir_Ost_Time.jpg",Dir_Ost_Time_plot)
+ggsave("Figures/Act_Part_Time.jpg",Act_Part_Time_plot)
+```
+
